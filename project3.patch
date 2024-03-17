@@ -1,0 +1,240 @@
+diff -ruN gem5_clean/src/mem/cache/replacement_policies/lru_ipv.cc gem5/src/mem/cache/replacement_policies/lru_ipv.cc
+--- gem5_clean/src/mem/cache/replacement_policies/lru_ipv.cc	1969-12-31 17:00:00.000000000 -0700
++++ gem5/src/mem/cache/replacement_policies/lru_ipv.cc	2023-11-16 19:53:31.855330000 -0700
+@@ -0,0 +1,115 @@
++#include "mem/cache/replacement_policies/lru_ipv.hh"
++
++#include <cassert>
++#include <memory>
++#include <cmath>
++
++#include "base/intmath.hh"
++#include "params/LRUIPVRP.hh"
++#include "base/logging.hh"
++
++namespace ReplacementPolicy {
++
++//Instantiate values
++LRUIPVRP::LRUIPVRP(const Params &p)
++    : Base(p),num_way(p.numWays), count(0), vecInst(nullptr)
++{
++}
++
++//Constructor
++LRUIPVRP::LRUReplData::LRUReplData( uint64_t index, std::shared_ptr<lruIPV> vect): index(index), vect(vect)  {
++}
++
++
++//this function is called upon initialisation of a cache block
++void
++LRUIPVRP::reset(const std::shared_ptr<ReplacementData>& repl_data) const
++{
++    std::shared_ptr<LRUReplData> data = std::static_pointer_cast<LRUReplData>(repl_data);
++    lruIPV* vect1 = data->vect.get();
++       
++    uint64_t index = 0;     
++
++    while (index < vect1->size()) 
++    {   
++         if ((vect1->at(index) >= IPV[num_way]) && (vect1->at(index) < num_way)){ 
++             vect1->at(index) = vect1->at(index) + 1;
++         }
++         index++;
++    }
++    vect1->at(data->index) = IPV[num_way];
++}
++//this function is used to instantiate a particular cache block
++std::shared_ptr<ReplacementData>
++LRUIPVRP::instantiateEntry()
++{
++    
++    //create a vector for each set. Number of elements in the vector is equal to the set associativity (num_way)
++    if(count % num_way == 0)
++    {
++        vecInst = new lruIPV(num_way,num_way);
++    }
++
++    LRUReplData* replData = new LRUReplData(count % num_way,std::shared_ptr<lruIPV>(vecInst));
++
++    count++;
++    return std::shared_ptr<ReplacementData>(replData);
++   
++}
++
++//This fucntion is used to access a existing cache block . this is called when cache block is accesed again after entering the cache
++void
++LRUIPVRP::touch(const std::shared_ptr<ReplacementData>& repl_data) const
++{
++    std::shared_ptr<LRUReplData> data = std::static_pointer_cast<LRUReplData>(repl_data); 
++    lruIPV* vect1 = data->vect.get();
++
++    //get value for promotion from table
++    uint64_t newPos = IPV[data->index];   
++    uint64_t oldPos = vect1->at(data->index);
++    uint64_t index = 0;
++    while (index < vect1->size()) 
++    {
++         if((vect1->at(index) >= newPos) && (vect1->at(index)< oldPos))
++         { 
++             vect1->at(index) = vect1->at(index) + 1;
++         }
++         index++;
++     }
++     vect1->at(data->index) = newPos;
++ 
++}
++
++//this function is called to find the pseudo lru cache element in order for it to be removed from the cache. this is used to find the cache block to evict from the cache and bring in a new cache block in its place 
++ReplaceableEntry*
++LRUIPVRP::getVictim(const ReplacementCandidates& repl_candidates) const
++{
++
++    assert(repl_candidates.size() > 0);
++
++    std::shared_ptr<LRUReplData> data = std::static_pointer_cast<LRUReplData>(repl_candidates[0]->replacementData); 
++    lruIPV* vect1 = data->vect.get();
++    uint64_t index = 0;
++    uint64_t max = 0;
++    uint64_t insertIndex = 0;
++    while (index < vect1->size()) 
++    {
++        if(max < vect1->at(index))
++        {
++            max = vect1->at(index);
++            insertIndex = index;
++        }
++        index++;
++    }
++    return repl_candidates[insertIndex];
++
++}
++
++//this function is called when we want to invalidate a cache block thereby removing from the cache and bringing in a new cache block
++void
++LRUIPVRP::invalidate(const std::shared_ptr<ReplacementData>& repl_data) const
++{
++    //do nothing in this function
++    return; 
++}
++}
+diff -ruN gem5_clean/src/mem/cache/replacement_policies/lru_ipv.hh gem5/src/mem/cache/replacement_policies/lru_ipv.hh
+--- gem5_clean/src/mem/cache/replacement_policies/lru_ipv.hh	1969-12-31 17:00:00.000000000 -0700
++++ gem5/src/mem/cache/replacement_policies/lru_ipv.hh	2023-11-16 20:04:35.271504996 -0700
+@@ -0,0 +1,95 @@
++#ifndef __MEM_CACHE_REPLACEMENT_POLICIES_LRUIPV_RP_HH__
++#define __MEM_CACHE_REPLACEMENT_POLICIES_LRUIPV_RP_HH__
++
++#include "mem/cache/replacement_policies/base.hh"
++
++struct LRUIPVRPParams;
++namespace ReplacementPolicy {
++
++class LRUIPVRP : public Base
++{
++  protected:
++
++    //given IPV vector as per quiz
++    const std::vector<uint64_t> IPV{0,0,1,0,3,0,1,0,1,7,5,1,0,0,1,11,14};
++    
++    uint64_t count;
++
++    //no. of cache blocks in a set i.e ways in a cache
++    const uint64_t num_way;
++
++    typedef std::vector<uint64_t> lruIPV;
++
++    lruIPV* vecInst;
++
++    /** replacement data LRU*/
++    struct LRUReplData : ReplacementData
++    {
++        /** Tick on which the entry was last touched. */
++        Tick lastTouchTick;
++
++        mutable uint64_t index;
++
++        std::shared_ptr<lruIPV> vect;
++        /**
++         * Default constructor. 
++         */
++        LRUReplData(uint64_t assoc, std::shared_ptr<lruIPV> vect);
++    };
++
++
++  public:
++
++    typedef LRUIPVRPParams Params;
++
++    //initialize
++    LRUIPVRP(const Params &p);
++
++    //destructor
++    ~LRUIPVRP() = default;
++
++    /**
++     * Touch an entry to update its replacement data.
++     * Sets its last touch tick as the current tick.
++     *
++     * @param replacement_data Replacement data to be touched.
++     */
++    void touch(const std::shared_ptr<ReplacementData>& replacement_data) const
++                                                                     override;
++
++    /**
++     * Reset replacement data. Used when an entry is inserted.
++     * Sets its last touch tick as the current tick.
++     *
++     * @param replacement_data Replacement data to be reset.
++     */
++    void reset(const std::shared_ptr<ReplacementData>& replacement_data) const
++                                                                     override;
++
++    /**
++     * Invalidate replacement data to set it as the next probable victim.
++     * Sets its last touch tick as the starting tick.
++     *
++     * @param replacement_data Replacement data to be invalidated.
++     */
++    void invalidate(const std::shared_ptr<ReplacementData>& replacement_data) const
++                                                              override;
++
++    /**
++     * Find replacement victim using LRU timestamps.
++     *
++     * @param candidates Replacement candidates, selected by indexing policy.
++     * @return Replacement entry to be replaced.
++     */
++    ReplaceableEntry* getVictim(const ReplacementCandidates& candidates) const
++                                                                     override;
++
++    /**
++     * Instantiate a replacement data entry.
++     *
++     * @return A shared pointer to the new replacement data.
++     */
++    std::shared_ptr<ReplacementData> instantiateEntry() override;
++};
++}
++#endif // __MEM_CACHE_REPLACEMENT_POLICIES_LRUIPV_RP_HH__
+diff -ruN gem5_clean/src/mem/cache/replacement_policies/ReplacementPolicies.py gem5/src/mem/cache/replacement_policies/ReplacementPolicies.py
+--- gem5_clean/src/mem/cache/replacement_policies/ReplacementPolicies.py	2023-09-30 17:39:28.763702000 -0700
++++ gem5/src/mem/cache/replacement_policies/ReplacementPolicies.py	2023-11-16 19:59:30.770094649 -0700
+@@ -100,3 +100,10 @@
+     type = "WeightedLRURP"
+     cxx_class = "ReplacementPolicy::WeightedLRU"
+     cxx_header = "mem/cache/replacement_policies/weighted_lru_rp.hh"
++    
++# Add LRU IPV class in replacement policies
++class LRUIPVRP(BaseReplacementPolicy):
++    type = "LRUIPVRP"
++    cxx_class = "ReplacementPolicy::LRUIPVRP"
++    cxx_header = "mem/cache/replacement_policies/lru_ipv.hh"
++    numWays = Param.Int(Parent.assoc, "Set associativity")
+diff -ruN gem5_clean/src/mem/cache/replacement_policies/SConscript gem5/src/mem/cache/replacement_policies/SConscript
+--- gem5_clean/src/mem/cache/replacement_policies/SConscript	2023-09-30 17:39:28.804002000 -0700
++++ gem5/src/mem/cache/replacement_policies/SConscript	2023-11-16 19:56:32.484369844 -0700
+@@ -40,3 +40,4 @@
+ Source('second_chance_rp.cc')
+ Source('tree_plru_rp.cc')
+ Source('weighted_lru_rp.cc')
++Source('lru_ipv.cc')
